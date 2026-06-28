@@ -22,19 +22,26 @@ Easily apply custom editor color themes in MATLAB — including **Dracula**, **S
    cd matlab-theme-switcher
    ```
 
-2. Open `mainColorThemeChanger.m` in MATLAB
+2. Open `colorThemeSwitcher.m` in MATLAB
 
 3. Set the desired theme at the top:
    ```matlab
    themeName = 'catppuccin';  % Options: 'dracula', 'solarized', 'monokai'
    ```
 
-4. Run the script. It will:
-   - Backup your current `matlab.mlsettings`
-   - Inject the selected theme
-   - Overwrite your live settings file
+4. Run the script (MATLAB can stay open). It applies the theme through
+   MATLAB's **Settings API** (`settings().PersonalValue`), so MATLAB itself
+   owns and persists the change.
 
-5. **Restart MATLAB** to activate the new colors
+5. **Restart MATLAB** to fully redraw the desktop with the new colors
+
+> **Why the Settings API?** MATLAB keeps all settings in memory while running
+> and writes `matlab.mlsettings` back to disk on shutdown. Editing the
+> `.mlsettings` file directly while MATLAB is open does not work — MATLAB
+> overwrites it with its in-memory copy on exit, so the theme *reverts* after a
+> restart. Writing through `settings().PersonalValue` avoids this entirely.
+> (A file-based fallback is still included for environments where the API path
+> is unavailable; it must be copied into `prefdir` while MATLAB is closed.)
 
 ---
 
@@ -55,7 +62,7 @@ Add more themes easily via `getTheme.m`.
 
 ```
 matlab-theme-switcher/
-├── mainColorThemeChanger.m      # Main patching script
+├── colorThemeSwitcher.m         # Main script (Settings API + file fallback)
 ├── getTheme.m                   # Theme definitions
 ├── parseGenericSettingsJson.m  # Helper for .json parsing
 ├── README.md                    # You’re reading it

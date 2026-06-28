@@ -1,207 +1,152 @@
 %% MATLAB Color Theme Switcher
 % ----------------------------------------------------------
-% This script allows you to apply custom color themes (e.g., Dracula, Monokai)
-% by modifying your `matlab.mlsettings` file. It:
-%   1. Copies and unzips your current settings
-%   2. Patches theme colors (Desktop + Syntax Highlighting)
-%   3. Repackages and installs the new theme
+% Applies custom color themes (e.g., Dracula, Monokai, Solarized, Catppuccin)
+% to MATLAB using the official Settings API.
+%
+% Why the Settings API instead of editing matlab.mlsettings directly?
+%   MATLAB keeps all of its settings in memory while it is running, and it
+%   writes them back to matlab.mlsettings on shutdown. So if you overwrite the
+%   .mlsettings file on disk while MATLAB is open (as the old version of this
+%   script did), MATLAB clobbers your changes with its in-memory copy when it
+%   exits — and the theme "reverts" to the previous one after a restart.
+%
+%   Writing through settings().PersonalValue instead makes MATLAB itself own
+%   the new values: they take effect immediately, MATLAB persists them on exit,
+%   and they are NOT reverted. This works even with MATLAB open.
 % ----------------------------------------------------------
 % Usage:
-%   - Set the desired theme name in the input section below
-%   - Run the entire script
-%   - Restart MATLAB to see the effect
+%   1. Set the desired theme name below
+%   2. Run this script (MATLAB can stay open)
+%   3. Restart MATLAB to fully redraw the desktop with the new theme
+% ----------------------------------------------------------
 
 %% 🧑‍💻 User Input
 clc;
 
-themeName = 'catppuccin';  % <--- Change this to switch themes ('dracula', 'monokai', 'solarized', 'catppuccin')
+themeName = 'dracula';  % <--- 'dracula' | 'monokai' | 'solarized' | 'catppuccin'
 
 
-%% STEP 1: Copy + unzip matlab.mlsettings to working folder
-clc;
-
-% 1. Locate the original mlsettings file from prefdir
-srcFile = fullfile(prefdir, 'matlab.mlsettings');
-assert(isfile(srcFile), ...
-    '❌ Cannot find matlab.mlsettings in %s', prefdir);
-
-fprintf("📍 Found source: %s\n", srcFile);
-
-% 2. Copy to working directory
-dstFile = fullfile(pwd, 'matlab.mlsettings');
-
-% If already exists, back it up
-if isfile(dstFile)
-    copyfile(dstFile, dstFile + ".bak", 'f');
-    fprintf("🗄️  Existing matlab.mlsettings backed up → matlab.mlsettings.bak\n");
-end
-
-copyfile(srcFile, dstFile, 'f');
-fprintf("✅ Copied to: %s\n", dstFile);
-
-% 3. Unzip into ./mlsettings_tmp (delete if exists)
-tmpDir = fullfile(pwd, 'mlsettings_tmp');
-if isfolder(tmpDir)
-    rmdir(tmpDir, 's');
-end
-mkdir(tmpDir);
-
-unzip(dstFile, tmpDir);
-fprintf("📂 Unzipped archive into: %s\n", tmpDir);
-
-fprintf("\n✔️ Step 1 complete — you can now parse JSON files from mlsettings_tmp\n");
-
-%% STEP 2: Parse relevant settings.json files using helper function
-fprintf('\n🔍 Parsing color settings files...\n');
-
-% Define the file paths relative to the unzipped folder
-jsonPaths = {
-    fullfile(tmpDir, 'fsroot', 'settingstree', 'matlab', 'colors', 'settings.json')
-};
-
-allSettings = table();                  % combined table view
-parsedData = containers.Map();         % key: filepath → value: full struct
-
-for i = 1:numel(jsonPaths)
-    jsonFile = jsonPaths{i};
-    if isfile(jsonFile)
-        parsed = parseGenericSettingsJson(jsonFile);     % table of entries
-        parsed.SourceFile = repmat({jsonFile}, height(parsed), 1);  % add file info
-        allSettings = [allSettings; parsed];              % accumulate all
-
-        % Also store original decoded struct for later editing
-        rawText = fileread(jsonFile);
-        parsedStruct = jsondecode(rawText);
-        parsedData(jsonFile) = parsedStruct;
-    else
-        warning('Missing settings file: %s', jsonFile);
-    end
-end
-
-
-% Preview the result
-fprintf('✅ Parsed %d entries from settings files.\n', height(allSettings));
-disp(allSettings(1:min(10, height(allSettings)), :));  % show first few rows
-
-
-
-%% STEP 3: Inject theme into DesktopColors and SyntaxHighlightingColors (triple-escaped)
-fprintf('\n🎨 Injecting theme with exact escape formatting...\n');
-
+%% Build the theme definition
 [desktopStruct, syntaxStruct] = getTheme(themeName);
 
+% The DesktopColors and SyntaxHighlightingColors settings store their value as
+% a JSON-encoded string, so encode the structs once here.
+desktopValue = jsonencode(desktopStruct);
+syntaxValue  = jsonencode(syntaxStruct);
 
-% Utility: triple-escaped JSON string for .mlsettings value
-% escapeForMLSettings = @(s) ['"' strrep(strrep(jsonencode(s), '\', '\\'), '"', '\\"') '"'];
-escapeForMLSettings = @(s) jsonencode(jsonencode(s));
 
-% Final encoded strings
-desktopEncoded = escapeForMLSettings(desktopStruct);
-syntaxEncoded  = escapeForMLSettings(syntaxStruct);
+%% Apply through the Settings API (persists, does not get reverted)
+fprintf("🎨 Applying theme '%s' via the Settings API...\n", themeName);
 
-% Target JSON file path
-jsonPath = fullfile(tmpDir, 'fsroot', 'settingstree', 'matlab', 'colors', 'settings.json');
+s = settings;
 
-if ~isKey(parsedData, jsonPath)
-    error('❌ Expected settings.json not found at: %s', jsonPath);
+okDesktop = applyColorSetting(s.matlab.colors, 'DesktopColors', desktopValue);
+okSyntax  = applyColorSetting(s.matlab.colors, 'SyntaxHighlightingColors', syntaxValue);
+
+if okDesktop && okSyntax
+    fprintf("✅ Theme '%s' applied and saved. It will persist across restarts.\n", themeName);
+    fprintf("🔁 Restart MATLAB to fully redraw the desktop with the new theme.\n");
+else
+    warning(['Could not apply one or more colors through the Settings API. ' ...
+             'Generating a themed matlab.mlsettings file as a fallback — ' ...
+             'see the printed instructions.']);
+    applyThemeViaFile(themeName, desktopStruct, syntaxStruct);
 end
 
-jsonStruct = parsedData(jsonPath);
 
-% Apply patches in-place
-for i = 1:numel(jsonStruct.settings)
-    name = jsonStruct.settings(i).name;
+%% ----------------------------------------------------------------------------
+%% Local helper functions
+%% ----------------------------------------------------------------------------
 
-    switch name
-        case 'DesktopColors'
-            jsonStruct.settings(i).value = desktopEncoded;
-            jsonStruct.settings(i).isUserDefined = true;
-            fprintf("✔ Patched DesktopColors\n");
-
-        case 'SyntaxHighlightingColors'
-            jsonStruct.settings(i).value = syntaxEncoded;
-            jsonStruct.settings(i).isUserDefined = true;
-            fprintf("✔ Patched SyntaxHighlightingColors\n");
-    end
-end
-
-parsedData(jsonPath) = jsonStruct;
-
-fprintf("✅ Theme '%s' fully injected with correct .mlsettings formatting.\n", themeName);
-
-
-
-%% STEP 4: Write updated Dracula settings back to disk
-fprintf('\n💾 Writing updated JSON files to disk...\n');
-
-for key = keys(parsedData)
-    jsonPath = key{1};                   % file path
-    jsonStruct = parsedData(jsonPath);  % modified content
-
+function ok = applyColorSetting(group, name, jsonValue)
+%APPLYCOLORSETTING Set a color setting's PersonalValue and verify it stuck.
+    ok = true;
     try
-        % Encode and write with indentation
-        fid = fopen(jsonPath, 'w');
-        jsonStr = jsonencode(jsonStruct);
-        jsonStr = strrep(jsonStr, '/', '\/');  % fix path slashes
-        fwrite(fid, jsonStr);
-        fclose(fid);
+        group.(name).PersonalValue = jsonValue;
 
-        fprintf("  💾 Saved: %s\n", jsonPath);
+        % Verify the active value matches what we wrote.
+        if isequal(group.(name).ActiveValue, jsonValue)
+            fprintf("  ✔ Set %s\n", name);
+        else
+            warning("Value for %s did not match after writing.", name);
+            ok = false;
+        end
     catch ME
-        warning("❌ Failed to write %s: %s", jsonPath, ME.message);
+        warning("Could not set %s via Settings API: %s", name, ME.message);
+        ok = false;
     end
 end
 
-fprintf("✅ All modified settings written successfully.\n");
 
+function applyThemeViaFile(themeName, desktopStruct, syntaxStruct)
+%APPLYTHEMEVIAFILE Fallback: build a themed matlab.mlsettings in the current
+% folder. IMPORTANT: this file must be copied into prefdir while MATLAB is
+% CLOSED, otherwise MATLAB will overwrite it on exit (the very bug this script
+% avoids by using the Settings API above).
 
-%% STEP 5: Zip and rename to matlab.mlsettings (for AppData overwrite)
-fprintf('\n📦 Zipping modified settings into matlab.mlsettings...\n');
+    % Value as stored inside the JSON settings file (string-of-a-string).
+    escapeForMLSettings = @(strct) jsonencode(jsonencode(strct));
+    desktopEncoded = escapeForMLSettings(desktopStruct);
+    syntaxEncoded  = escapeForMLSettings(syntaxStruct);
 
-zipFile = fullfile(pwd, 'temp_theme.zip');
-mlsettingsFile = fullfile(pwd, 'matlab.mlsettings');
+    % 1. Copy + unzip the current matlab.mlsettings into a working folder.
+    srcFile = fullfile(prefdir, 'matlab.mlsettings');
+    assert(isfile(srcFile), '❌ Cannot find matlab.mlsettings in %s', prefdir);
 
-% Clean up previous versions
-if isfile(zipFile), delete(zipFile); end
-if isfile(mlsettingsFile), delete(mlsettingsFile); end
+    dstFile = fullfile(pwd, 'matlab.mlsettings');
+    copyfile(srcFile, dstFile, 'f');
 
-% Gather all files under tmp folder
-allFiles = dir(fullfile(tmpDir, '**', '*'));
-allFiles = allFiles(~[allFiles.isdir]);
+    tmpDir = fullfile(pwd, 'mlsettings_tmp');
+    if isfolder(tmpDir)
+        rmdir(tmpDir, 's');
+    end
+    mkdir(tmpDir);
+    unzip(dstFile, tmpDir);
 
-% Build relative paths for zip structure
-relPaths = strings(numel(allFiles), 1);
-for i = 1:numel(allFiles)
-    absPath = fullfile(allFiles(i).folder, allFiles(i).name);
-    relPaths(i) = strrep(absPath, [tmpDir filesep], '');
+    % 2. Patch the colors settings.json.
+    jsonPath = fullfile(tmpDir, 'fsroot', 'settingstree', 'matlab', 'colors', 'settings.json');
+    assert(isfile(jsonPath), '❌ Expected settings.json not found at: %s', jsonPath);
+
+    jsonStruct = jsondecode(fileread(jsonPath));
+    for i = 1:numel(jsonStruct.settings)
+        switch jsonStruct.settings(i).name
+            case 'DesktopColors'
+                jsonStruct.settings(i).value = desktopEncoded;
+                jsonStruct.settings(i).isUserDefined = true;
+            case 'SyntaxHighlightingColors'
+                jsonStruct.settings(i).value = syntaxEncoded;
+                jsonStruct.settings(i).isUserDefined = true;
+        end
+    end
+
+    fid = fopen(jsonPath, 'w');
+    jsonStr = strrep(jsonencode(jsonStruct), '/', '\/');
+    fwrite(fid, jsonStr);
+    fclose(fid);
+
+    % 3. Repackage into matlab.mlsettings in the current folder.
+    zipFile        = fullfile(pwd, 'temp_theme.zip');
+    mlsettingsFile = fullfile(pwd, 'matlab.mlsettings');
+    if isfile(zipFile),        delete(zipFile);        end
+    if isfile(mlsettingsFile), delete(mlsettingsFile); end
+
+    allFiles = dir(fullfile(tmpDir, '**', '*'));
+    allFiles = allFiles(~[allFiles.isdir]);
+    relPaths = strings(numel(allFiles), 1);
+    for i = 1:numel(allFiles)
+        absPath = fullfile(allFiles(i).folder, allFiles(i).name);
+        relPaths(i) = strrep(absPath, [tmpDir filesep], '');
+    end
+
+    oldDir = pwd;
+    cd(tmpDir);
+    zip(zipFile, relPaths);
+    cd(oldDir);
+    movefile(zipFile, mlsettingsFile);
+
+    fprintf("📦 Themed file written to: %s\n", mlsettingsFile);
+    fprintf("⚠️  To use it WITHOUT it being reverted:\n");
+    fprintf("    1. Fully CLOSE MATLAB.\n");
+    fprintf("    2. Copy the file above over:\n          %s\n", srcFile);
+    fprintf("    3. Reopen MATLAB.\n");
 end
-
-% Create zip from inside the tmp folder
-oldDir = pwd;
-cd(tmpDir);
-zip(zipFile, relPaths);
-cd(oldDir);
-
-% Rename zip to matlab.mlsettings
-movefile(zipFile, mlsettingsFile);
-
-fprintf("✅ Theme saved as: %s\n", mlsettingsFile);
-% fprintf("📂 Now copy this to:\n   %s\n", fullfile(prefdir, 'matlab.mlsettings'));
-% fprintf("🔁 Then restart MATLAB to see Dracula theme in effect.\n");
-
-%% STEP 6: Overwrite user's active matlab.mlsettings in prefdir
-fprintf('\n🚀 Applying new theme by copying into prefdir...\n');
-
-destPath = fullfile(prefdir, 'matlab.mlsettings');
-
-% Backup existing settings before overwrite
-if isfile(destPath)
-    copyfile(destPath, destPath + ".bak", 'f');
-    fprintf("🗄️  Existing prefdir version backed up as matlab.mlsettings.bak\n");
-end
-
-% Overwrite with the new themed file
-copyfile(mlsettingsFile, destPath, 'f');
-
-fprintf("✅ Theme '%s' installed to: %s\n", themeName, destPath);
-fprintf("🔁 Please restart MATLAB to activate the theme.\n");
