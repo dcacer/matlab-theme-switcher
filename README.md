@@ -45,6 +45,50 @@ Easily apply custom editor color themes in MATLAB — including **Dracula**, **S
 
 ---
 
+## ⚙️ How It Works
+
+The switcher changes MATLAB colors by writing two settings through MATLAB's
+**Settings API** — `DesktopColors` (desktop foreground/background) and
+`SyntaxHighlightingColors` (editor syntax colors). The full flow:
+
+1. **Define the theme** — `getTheme.m` returns two structs for the chosen
+   theme: a `desktopStruct` (light/dark foreground & background) and a
+   `syntaxStruct` (keyword, comment, string, error colors, etc.).
+
+2. **Encode the values** — both settings store their value as a JSON string,
+   so each struct is serialized once with `jsonencode`.
+
+3. **Apply via the Settings API** — the script assigns the encoded strings to
+   `s.matlab.colors.DesktopColors.PersonalValue` and
+   `s.matlab.colors.SyntaxHighlightingColors.PersonalValue`, where
+   `s = settings`. Setting the **PersonalValue** makes the change immediate and
+   persistent, then reads back `ActiveValue` to confirm it was written.
+
+4. **Fallback (only if the API path is unavailable)** — the script rebuilds a
+   themed `matlab.mlsettings` archive (copy → unzip → patch
+   `colors/settings.json` → re-zip) into the current folder, with instructions
+   to copy it into `prefdir` **while MATLAB is closed**.
+
+### Why the Settings API instead of editing the file?
+
+MATLAB loads `matlab.mlsettings` into memory at startup and **writes it back on
+shutdown**. If you overwrite that file on disk while MATLAB is open, MATLAB
+clobbers your edit with its in-memory copy when it exits — so the theme
+*reverts* on the next launch. This was the original bug.
+
+Writing through `settings().PersonalValue` hands the new value to MATLAB
+itself, so MATLAB persists it correctly on exit. That's why the switcher now
+works **even with MATLAB open** (a restart is still needed only to redraw the
+desktop).
+
+```matlab
+s = settings;
+s.matlab.colors.DesktopColors.PersonalValue          = jsonencode(desktopStruct);
+s.matlab.colors.SyntaxHighlightingColors.PersonalValue = jsonencode(syntaxStruct);
+```
+
+---
+
 ## 🎨 Available Themes
 
 | Theme         | Description                          | Source                                      |
